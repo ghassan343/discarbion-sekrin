@@ -691,7 +691,7 @@ function loadSettings(){
 }
 function refreshButtons(){
   var has=S.steps.length>0;
-  ['bPreview','bCopy','bDownload','bEmbed','bSave','bPublish'].forEach(function(id){$(id).disabled=!has});
+  ['bPreview','bCopy','bDownload','bEmbed','bSave'].forEach(function(id){$(id).disabled=!has});
 }
 function renderAll(noTouch){renderList();renderEditor();loadSettings();refreshButtons();$('codebox').style.display='none';if(!noTouch)touch()}
 
@@ -991,7 +991,7 @@ function saveProject(silent){
   if(!S.steps.length){if(!silent)toast('أضف صوراً أولاً');return Promise.resolve()}
   if(!S.pid)S.pid='p'+Date.now();
   S.name=($('pname').value||'').trim()||'بدون اسم';
-  var p={id:S.pid,name:S.name,updated:Date.now(),cfg:S.cfg,steps:S.steps,ghFile:S.ghFile||''};
+  var p={id:S.pid,name:S.name,updated:Date.now(),cfg:S.cfg,steps:S.steps};
   return dbPut(p).then(function(){
     dirty=false;$('saveState').textContent='تم الحفظ';
     if(!silent)toast('تم حفظ المشروع');
@@ -1004,7 +1004,7 @@ function cleanCfg(c){
     endTitle:c.endTitle===undefined?d.endTitle:String(c.endTitle),endText:c.endText===undefined?d.endText:String(c.endText),endBtn:c.endBtn===undefined?d.endBtn:String(c.endBtn)};
 }
 function applyProject(p){
-  S.pid=p.id;S.name=p.name;S.cfg=cleanCfg(p.cfg);S.ghFile=String(p.ghFile||'');
+  S.pid=p.id;S.name=p.name;S.cfg=cleanCfg(p.cfg);
   S.steps=(p.steps||[]).map(normStep).filter(function(s){return s});
   ['title','color','dir','endTitle','endText','endBtn'].forEach(function(k){$(k).value=S.cfg[k]});
   $('palGlobal').refresh();$('pname').value=S.name;
@@ -1085,124 +1085,5 @@ $('pImport').addEventListener('change',function(e){
 $('pname').addEventListener('input',function(){S.name=this.value;touch()});
 window.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveProject(false)}});
 window.addEventListener('beforeunload',function(e){if(S.steps.length&&(dirty||!S.pid)){e.preventDefault();e.returnValue=''}});
-
-/* ===================== النشر على GitHub (من المتصفح مباشرة عبر REST API) ===================== */
-var GH_FIELDS=[['ghOwner','owner'],['ghRepo','repo'],['ghBranch','branch'],['ghDir','dir'],['ghBase','base']];
-var GH={token:''};
-(function(){
-  var c=null;try{c=JSON.parse(lsGet('db_gh_cfg')||'null')}catch(e){}
-  c=c||{};
-  var m=/^([^.]+)\.github\.io$/i.exec(location.hostname);
-  if(m&&!c.owner){
-    c.owner=m[1];var seg=location.pathname.split('/')[1];
-    c.repo=c.repo||((seg&&!/\.html?$/i.test(seg))?seg:m[1]+'.github.io');
-  }
-  if(c.dir===undefined)c.dir='demos';
-  GH_FIELDS.forEach(function(f){$(f[0]).value=c[f[1]]||''});
-  var k=lsGet('db_gh_key');if(k){GH.token=k;$('ghToken').value=k;$('ghRemember').checked=true}
-})();
-function ghSaveCfg(){
-  var o={};GH_FIELDS.forEach(function(f){o[f[1]]=$(f[0]).value.trim()});lsSet('db_gh_cfg',JSON.stringify(o));
-  GH.token=$('ghToken').value.trim();
-  if($('ghRemember').checked&&GH.token)lsSet('db_gh_key',GH.token);else lsDel('db_gh_key');
-}
-GH_FIELDS.map(function(f){return f[0]}).concat(['ghToken']).forEach(function(id){$(id).addEventListener('input',ghSaveCfg)});
-$('ghRemember').addEventListener('change',ghSaveCfg);
-function ghSlug(s){return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,50)}
-function ghB64(str){
-  var bytes=new TextEncoder().encode(str),bin='',ch=0x8000;
-  for(var i=0;i<bytes.length;i+=ch)bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+ch));
-  return btoa(bin);
-}
-function ghApi(method,path,body){
-  var h={'Authorization':'Bearer '+GH.token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'};
-  if(body)h['Content-Type']='application/json';
-  return fetch('https://api.github.com'+path,{method:method,headers:h,body:body?JSON.stringify(body):undefined}).then(function(r){
-    return r.text().then(function(t){var j=null;try{j=t?JSON.parse(t):null}catch(e){}return {status:r.status,ok:r.ok,json:j}});
-  },function(){throw {code:'net'}});
-}
-function ghErr(e){
-  if(e&&e.msg)return e.msg;
-  if(e&&e.code==='net')return 'تعذّر الاتصال بـ GitHub. تحقق من الإنترنت ثم أعد المحاولة';
-  return 'حدث خطأ غير متوقع';
-}
-function ghFail(r,what){
-  var m=(r.json&&r.json.message)||'';
-  if(r.status===401)return {msg:'الرمز غير صحيح أو منتهي الصلاحية'};
-  if(r.status===403||r.status===404)return {msg:what+' ('+r.status+'): تأكد أن الرمز يملك صلاحية Contents: Read and write على هذا الـ repo'+(m?' — '+String(m).slice(0,100):'')};
-  if(r.status===409||r.status===422)return {msg:'تعارض أثناء الرفع، أعد المحاولة'+(m?' — '+String(m).slice(0,100):'')};
-  return {msg:what+' ('+r.status+')'+(m?': '+String(m).slice(0,100):'')};
-}
-function ghStatus(t){$('ghStatus').textContent=t||''}
-function ghPublish(){
-  ghSaveCfg();
-  var owner=$('ghOwner').value.trim(),repo=$('ghRepo').value.trim(),branch=$('ghBranch').value.trim();
-  var dir=$('ghDir').value.trim().replace(/^\/+|\/+$/g,'');
-  var file=$('ghFile').value.trim().replace(/\.html?$/i,'').replace(/[^a-zA-Z0-9._-]+/g,'-').replace(/^-+|-+$/g,'');
-  var RE=/^[A-Za-z0-9._-]+$/;
-  if(!GH.token){toast('أدخل رمز GitHub أولاً');return}
-  if(!RE.test(owner)||!RE.test(repo)){toast('اكتب اسم الحساب واسم الـ repo بشكل صحيح');return}
-  if(!file){toast('اكتب اسم الملف');return}
-  if(dir&&!/^[A-Za-z0-9._\/-]+$/.test(dir)){toast('اسم المجلد يقبل حروفاً إنجليزية وأرقاماً فقط');return}
-  var html=currentHTML();
-  if(html.length>40e6){toast('العرض كبير جداً للنشر (أكثر من 40 ميغابايت). قلّل الصور أو الصوت');return}
-  var path=(dir?dir+'/':'')+file+'.html',ep=path.split('/').map(encodeURIComponent).join('/');
-  var go=$('ghGo');go.disabled=true;$('ghOut').style.display='none';ghStatus('جاري التحقق من الـ repo...');
-  var created=false,pagesNote='',pagesUrl='',commitUrl='';
-  ghApi('GET','/repos/'+owner+'/'+repo).then(function(r){
-    if(r.status===404){
-      if(!confirm('الـ repo «'+owner+'/'+repo+'» غير موجود أو لا يصل إليه الرمز. هل تريد إنشاءه الآن (عام Public)؟'))throw {msg:'تم الإلغاء'};
-      ghStatus('جاري إنشاء الـ repo...');
-      return ghApi('POST','/user/repos',{name:repo,auto_init:true,private:false,description:'Interactive demos'}).then(function(c){
-        if(!c.ok)throw ghFail(c,'تعذّر إنشاء الـ repo');
-        created=true;
-        return new Promise(function(res){setTimeout(function(){res(c)},1500)});
-      });
-    }
-    if(!r.ok)throw ghFail(r,'تعذّر الوصول إلى الـ repo');
-    if(r.json&&r.json.permissions&&r.json.permissions.push===false)throw {msg:'الرمز لا يملك صلاحية الكتابة على هذا الـ repo'};
-    return r;
-  }).then(function(r){
-    if(!branch)branch=(r.json&&r.json.default_branch)||'main';
-    ghStatus('جاري رفع الملف...');
-    return ghApi('GET','/repos/'+owner+'/'+repo+'/contents/'+ep+'?ref='+encodeURIComponent(branch));
-  }).then(function(r){
-    var body={message:'Publish demo: '+file,content:ghB64(html),branch:branch};
-    if(r.ok&&r.json&&r.json.sha)body.sha=r.json.sha;
-    else if(r.status!==404)throw ghFail(r,'تعذّر قراءة الملف الحالي');
-    return ghApi('PUT','/repos/'+owner+'/'+repo+'/contents/'+ep,body);
-  }).then(function(r){
-    if(!r.ok)throw ghFail(r,'تعذّر رفع الملف');
-    commitUrl=(r.json&&r.json.content&&r.json.content.html_url)||('https://github.com/'+owner+'/'+repo+'/blob/'+branch+'/'+path);
-    ghStatus('جاري ضبط GitHub Pages...');
-    return ghApi('GET','/repos/'+owner+'/'+repo+'/pages');
-  }).then(function(r){
-    if(r.ok){pagesUrl=(r.json&&r.json.html_url)||'';return}
-    if(r.status===404){
-      return ghApi('POST','/repos/'+owner+'/'+repo+'/pages',{source:{branch:branch,path:'/'}}).then(function(p){
-        if(p.ok){pagesUrl=(p.json&&p.json.html_url)||'';pagesNote='تم تفعيل GitHub Pages للـ repo، وأول نشر قد يأخذ 1–3 دقائق ليظهر الرابط.'}
-        else pagesNote='تم رفع الملف، لكن تعذّر تفعيل GitHub Pages تلقائياً. فعّله يدوياً من Settings ← Pages (Branch: '+branch+')، أو أضف صلاحية Pages للرمز.';
-      });
-    }
-    pagesNote='تم رفع الملف، لكن تعذّر التحقق من حالة GitHub Pages ('+r.status+').';
-  }).then(function(){
-    var base=$('ghBase').value.trim().replace(/\/+$/,'');
-    if(!base)base=(pagesUrl||(repo.toLowerCase()===owner.toLowerCase()+'.github.io'?'https://'+owner+'.github.io/':'https://'+owner+'.github.io/'+repo+'/')).replace(/\/+$/,'');
-    var url=base+'/'+path;
-    $('ghUrl').value=url;$('ghOpen').href=url;$('ghRepoLink').href=commitUrl;$('ghEmbed').value=embedCode(url);
-    $('ghNote').textContent=(pagesNote?pagesNote+' ':'')+'بعد كل تحديث للعرض قد يحتاج الرابط إلى دقيقة تقريباً ليعرض آخر نسخة.'+(created?' تم إنشاء الـ repo.':'');
-    $('ghOut').style.display='block';ghStatus('تم النشر ✓');
-    S.ghFile=file;touch();toast('تم رفع العرض إلى GitHub');
-  }).catch(function(e){ghStatus('');toast(ghErr(e))}).then(function(){go.disabled=false});
-}
-$('bPublish').addEventListener('click',function(){
-  if(!S.steps.length)return;
-  $('ghFile').value=S.ghFile||ghSlug(S.cfg.title)||ghSlug(S.name)||('demo-'+Date.now().toString(36));
-  $('ghOut').style.display='none';ghStatus('');$('ghmodal').classList.add('on');
-});
-$('closeGh').addEventListener('click',function(){$('ghmodal').classList.remove('on')});
-$('ghGo').addEventListener('click',ghPublish);
-$('ghCopyUrl').addEventListener('click',function(){copyText($('ghUrl'),'تم نسخ الرابط')});
-$('ghCopyEmbed').addEventListener('click',function(){copyText($('ghEmbed'),'تم نسخ كود التضمين')});
 
 renderAll(true);dirty=false;openWelcome();
